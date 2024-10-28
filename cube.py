@@ -8,6 +8,7 @@ import tty
 from collections import defaultdict
 
 import numpy as np
+from numpy import dtype
 
 
 class ANSI:
@@ -47,10 +48,14 @@ class Term:
 
 
 class Canvas:
-    _pixel_map = ((0x01, 0x08),
-                  (0x02, 0x10),
-                  (0x04, 0x20),
-                  (0x40, 0x80))
+    _pixel_map = np.array(((0x01, 0x08),
+                           (0x02, 0x10),
+                           (0x04, 0x20),
+                           (0x40, 0x80)))
+    #  1 *   8 *
+    #  2 *  16 *
+    #  4 *  32 *
+    # 64 * 128 *
 
     # braille unicode characters starts at 0x2800
     _braille_char_offset = 0x2800
@@ -70,28 +75,31 @@ class Canvas:
         terminal_size = np.array([0, 0, 0, 0], dtype=np.ushort)
 
         fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, terminal_size)
+        # take into a count braille char shape ⣿
         return terminal_size[1] * 2, terminal_size[0] * 4
 
     @staticmethod
     def _get_pos(x, y):
-        """Convert x, y to cols, rows"""
+        """Convert x, y to cols, rows ⣿ """
         return x // 2, y // 4
 
-    def set(self, x, y):
+    def __setitem__(self, key, value):
         """Set a pixel of the :class:`Canvas` object.
 
         :param x: x coordinate of the pixel
         :param y: y coordinate of the pixel
         """
+        x, y = key
         col, row = self._get_pos(x, y)
 
-        if type(self.chars[row][col]) != int:
-            return
         # this where the braile magic happens =)
-        self.chars[row][col] |= self._pixel_map[y % 4][x % 2]
+        self.chars[row][col] |= self._pixel_map[y % 4, x % 2]
 
 
 class RawTTY:
+    """
+    Context manager for raw terminal mode.
+    """
 
     def __init__(self, hide=True):
         self.hide = hide
@@ -125,6 +133,10 @@ class RawTTY:
 
 
 def perspective(fovy, aspect, z_near, z_far):
+    """
+    Perspective matrix.
+    https://www.songho.ca/opengl/gl_projectionmatrix.html
+    """
     f = 1.0 / np.tan(np.radians(fovy) / 2.0)
     perspective_matrix = np.zeros((4, 4))
     perspective_matrix[0, 0] = f / aspect
@@ -157,6 +169,9 @@ def look_at_rotate_rh(eye, center, up):
 
 
 def view_port(resolution, far=0.1, near=10):
+    """
+    Projecting scene into canvas.
+    """
     width, height = resolution
     depth = far - near
     m = np.array(
@@ -171,6 +186,9 @@ def view_port(resolution, far=0.1, near=10):
 
 
 def rotate_xyz(a):
+    """
+    This rotates the model around center of scene
+    """
     x, y, z = np.deg2rad(a)
 
     rotate_x = np.array(
@@ -222,9 +240,17 @@ def bresenham_line(start_point, end_point):
 def draw(canvas, angles=np.array([0, 0, 0]), backface_culling=False):
     width, height = canvas.resolution
     Cube.vertices = Cube.vertices @ rotate_xyz(angles)
-    vertices = Cube.vertices @ (look_at_translate(np.array((0, 0, 3))) @ look_at_rotate_rh(
-        np.array((0, 0, 3)), np.array((0, 0, 0)), np.array((0, 1, 0))
-    )) @ perspective(90, width / height, 0.1, 10) @ view_port((width, height))
+    vertices = Cube.vertices @ (
+            look_at_translate(np.array((0, 0, 3))) @ look_at_rotate_rh(
+        eye=np.array((0, 0, 3)),
+        center=np.array((0, 0, 0)),
+        up=np.array((0, 1, 0)))
+    ) @ perspective(
+        fovy=90,
+        aspect=width / height,
+        z_near=0.1,
+        z_far=10
+    ) @ view_port(resolution=(width, height))
     vertices /= vertices[..., [3]]
 
     esc = b'\x1b'
@@ -232,17 +258,27 @@ def draw(canvas, angles=np.array([0, 0, 0]), backface_culling=False):
     for face in vertices[Cube.faces]:
         a, b, c, *_ = face[..., :3]
         normal = np.cross(b - a, c - a)
+        #        /\
+        #       /   \
+        #      /    │ \
+        #     /     │ normal
+        #    /      │    \
+        #   /       ├┐     \
+        #  /  ⎺⎺⎺⎺⎺⎺⎺⎺⎺⎺⎺⎺⎺  \
+        # /____________________\
+
         if normal[2] <= 0 and backface_culling:
             continue
-
-        for i in range(4):
-            edge = (face[i], face[(i + 1) % 4])
+        edges_in_face = len(face)
+        for i in range(edges_in_face):
+            edge = (face[i], face[(i + 1) % edges_in_face])  # AB -> BC -> CD -> DA
             pxls = bresenham_line(*edge)
-            if normal[2] < 0:
+            if normal[2] <= 0:
                 mask = np.bitwise_and(np.arange(len(pxls)) // 4, 1, dtype=np.int8).view(np.bool_)
                 pxls = pxls[mask]
-            for x, y, *_ in pxls:
-                canvas.set(int(x), int(y))
+
+            for x, y in pxls[..., :2]:
+                canvas[int(x), int(y)] = True
 
     for x in canvas.chars:
         for y in canvas.chars[x]:
@@ -259,8 +295,8 @@ def main():
     while True:
         key = sys.stdin.buffer.raw.read(100)
 
-        sys.stdout.write(ANSI.CLS)
-        sys.stdout.write(ANSI.HOME)
+        sys.stdout.write(ANSI.CLS)  # clear screen
+        sys.stdout.write(ANSI.HOME)  # put cursor at beginning 0,0
         sys.stdout.flush()
         canvas.clear()
         esc = b'\x1b'
@@ -270,7 +306,7 @@ def main():
         if key in [b'\x03', b'\x1a', b'\x04']:
             break
 
-        if key == b'b':
+        if key.lower() == b'b':
             backface_culling = not backface_culling
 
         if key and key[0] == 27 and key[1] == 91:
@@ -320,16 +356,16 @@ class Cube:
     E                F
                             X,    Y,    Z,   W     """
     vertices = np.array([[-1.0, -1.0, 1.0, 1.0],  # E   0
-                         [1.0, -1.0, 1.0, 1.0],  # F   1
-                         [-1.0, 1.0, 1.0, 1.0],  # C   2
-                         [1.0, 1.0, 1.0, 1.0],  # D   3
+                         [ 1.0, -1.0, 1.0, 1.0],  # F   1
+                         [-1.0,  1.0, 1.0, 1.0],  # C   2
+                         [ 1.0,  1.0, 1.0, 1.0],  # D   3
 
-                         [-1.0, 1.0, -1.0, 1.0],  # A   4
-                         [1.0, 1.0, -1.0, 1.0],  # B   5
+                         [-1.0,  1.0, -1.0, 1.0],  # A   4
+                         [ 1.0,  1.0, -1.0, 1.0],  # B   5
                          [-1.0, -1.0, -1.0, 1.0],  # G   6
-                         [1.0, -1.0, -1.0, 1.0]  # H   7
+                         [ 1.0, -1.0, -1.0, 1.0]   # H   7
                          ])
-
+    # order of edges in faces are important.
     # segments =     [(E, F), (F, D), (D, C), (C, E), (B, A), (H, B), (G, H), (A, G), (C, A), (D, B), (F, H), (E, G)]
     edges = np.array([(0, 1), (1, 3), (3, 2), (2, 0), (5, 4), (7, 5), (6, 7), (4, 6), (2, 4), (3, 5), (1, 7), (0, 6)])
 
@@ -340,7 +376,7 @@ class Cube:
                       ])
 
 
-# Set the signal handler and a 5-second alarm
+# Set the signal handler. SIGnal WINdow CHanged
 signal.signal(signal.SIGWINCH, reset_canvas)
 
 with RawTTY(hide=True):
