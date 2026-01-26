@@ -237,54 +237,45 @@ def bresenham_line(start_point, end_point):
     return start_point + np.arange(int(steps))[:, None] * step_size
 
 
-def draw(canvas, angles=np.array([0, 0, 0]), backface_culling=False):
-    width, height = canvas.resolution
-    Cube.vertices = Cube.vertices @ rotate_xyz(angles)
-    vertices = Cube.vertices @ (
-            look_at_translate(np.array((0, 0, 3))) @ look_at_rotate_rh(
-        eye=np.array((0, 0, 3)),
-        center=np.array((0, 0, 0)),
-        up=np.array((0, 1, 0)))
-    ) @ perspective(
-        fovy=90,
-        aspect=width / height,
-        z_near=0.1,
-        z_far=10
-    ) @ view_port(resolution=(width, height))
-    vertices /= vertices[..., [3]]
-
+def _handle_mouse_key(key, prev_mouse_pos):
     esc = b'\x1b'
+    try:
+        button, x, y, *_ = key[3: -1].split(b";")
+        pressed = key[-1] == 77
+        if pressed:
+            sys.stdout.write(f"{esc.decode()}[{y.decode()};{x.decode()}H")
+            sys.stdout.write(f"█")
+        x = int(x.decode())
+        y = int(y.decode()) * 2
+    except ValueError:
+        termios.tcflush(sys.stdin, termios.TCIOFLUSH)
+        return None, prev_mouse_pos
+    if prev_mouse_pos is None:
+        prev_mouse_pos = np.array([x, y, 0])
+    delta = np.array([x, y, 0]) - prev_mouse_pos
+    if pressed:
+        prev_mouse_pos = np.array([x, y, 0])
+    else:
+        prev_mouse_pos = None
+    return delta, prev_mouse_pos
 
-    for face in vertices[Cube.faces]:
-        a, b, c, *_ = face[..., :3]
-        normal = np.cross(b - a, c - a)
-        #        /\
-        #       /   \
-        #      /    │ \
-        #     /     │ normal
-        #    /      │    \
-        #   /       ├┐     \
-        #  /  ⎺⎺⎺⎺⎺⎺⎺⎺⎺⎺⎺⎺⎺  \
-        # /____________________\
 
-        if normal[2] <= 0 and backface_culling:
-            continue
-        edges_in_face = len(face)
-        for i in range(edges_in_face):
-            edge = (face[i], face[(i + 1) % edges_in_face])  # AB -> BC -> CD -> DA
-            pxls = bresenham_line(*edge)
-            if normal[2] <= 0:
-                mask = np.bitwise_and(np.arange(len(pxls)) // 4, 1, dtype=np.int8).view(np.bool_)
-                pxls = pxls[mask]
+def _handle_key(key, backface_culling):
+    if key in [b'\x03', b'\x1a', b'\x04']:
+        return 'break', backface_culling
+    if key.lower() == b'b':
+        backface_culling = not backface_culling
+    return None, backface_culling
 
-            for x, y in pxls[..., :2]:
-                canvas[int(x), int(y)] = True
 
-    for x in canvas.chars:
-        for y in canvas.chars[x]:
-            sys.stdout.write(f"{esc.decode()}[{x};{y}H")
-            sys.stdout.write(f"{chr(canvas._braille_char_offset + canvas.chars[x][y])}")
+def _draw_status(canvas, backface_culling):
+    esc = b'\x1b'
+    sys.stdout.write(ANSI.CLS)  # clear screen
+    sys.stdout.write(ANSI.HOME)  # put cursor at beginning 0,0
     sys.stdout.flush()
+    canvas.clear()
+    sys.stdout.write(f"{esc.decode()}[{0};{0}H")
+    sys.stdout.write(f"{ANSI.UNDERSCORE}B{ANSI.NORMAL}ackFaces: {backface_culling}\n\rCTRL+C exit")
 
 
 def main():
@@ -295,41 +286,18 @@ def main():
     while True:
         key = sys.stdin.buffer.raw.read(100)
 
-        sys.stdout.write(ANSI.CLS)  # clear screen
-        sys.stdout.write(ANSI.HOME)  # put cursor at beginning 0,0
-        sys.stdout.flush()
-        canvas.clear()
-        esc = b'\x1b'
-        sys.stdout.write(f"{esc.decode()}[{0};{0}H")
-        sys.stdout.write(f"{ANSI.UNDERSCORE}B{ANSI.NORMAL}ackFaces: {backface_culling}\n\rCTRL+C exit")
+        _draw_status(canvas, backface_culling)
 
-        if key in [b'\x03', b'\x1a', b'\x04']:
+        action, backface_culling = _handle_key(key, backface_culling)
+        if action == 'break':
             break
 
-        if key.lower() == b'b':
-            backface_culling = not backface_culling
-
         if key and key[0] == 27 and key[1] == 91:
-            button, x, y, *_ = key[3: -1].split(b";")
-            pressed = key[-1] == 77
-            try:  # if data from stdin read incorrectly
-                if pressed:
-                    sys.stdout.write(f"{esc.decode()}[{y.decode()};{x.decode()}H")
-                    sys.stdout.write(f"█")
-
-                x = int(x.decode())
-                y = int(y.decode()) * 2
-            except ValueError:
-                termios.tcflush(sys.stdin, termios.TCIOFLUSH)
+            new_delta, new_prev_mouse_pos = _handle_mouse_key(key, prev_mouse_pos)
+            if new_delta is None:
                 continue
-
-            if prev_mouse_pos is None:
-                prev_mouse_pos = np.array([x, y, 0])
-            delta = np.array([x, y, 0]) - prev_mouse_pos
-            if pressed:
-                prev_mouse_pos = np.array([x, y, 0])
-            else:
-                prev_mouse_pos = None
+            delta = new_delta
+            prev_mouse_pos = new_prev_mouse_pos
         draw(canvas, delta * sensitivity, backface_culling)
 
         sys.stdout.flush()
