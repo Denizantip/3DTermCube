@@ -287,11 +287,37 @@ def draw(canvas, angles=np.array([0, 0, 0]), backface_culling=False):
     sys.stdout.flush()
 
 
+def _handle_escape_sequence(key, prev_mouse_pos):
+    esc = b'\x1b'
+    try:
+        button, x, y, *_ = key[3: -1].split(b";")
+        pressed = key[-1] == 77
+        if pressed:
+            sys.stdout.write(f"{esc.decode()}[{y.decode()};{x.decode()}H")
+            sys.stdout.write(f"█")
+
+        x = int(x.decode())
+        y = int(y.decode()) * 2
+    except ValueError:
+        termios.tcflush(sys.stdin, termios.TCIOFLUSH)
+        return None, prev_mouse_pos, False
+
+    if prev_mouse_pos is None:
+        prev_mouse_pos = np.array([x, y, 0])
+    delta = np.array([x, y, 0]) - prev_mouse_pos
+    if pressed:
+        prev_mouse_pos = np.array([x, y, 0])
+    else:
+        prev_mouse_pos = None
+    return delta, prev_mouse_pos, True
+
+
 def main():
     sensitivity = 1
     backface_culling = False
     delta = np.array([0, 0, 0])
     prev_mouse_pos = None
+    esc = b'\x1b'
     while True:
         key = sys.stdin.buffer.raw.read(100)
 
@@ -299,7 +325,6 @@ def main():
         sys.stdout.write(ANSI.HOME)  # put cursor at beginning 0,0
         sys.stdout.flush()
         canvas.clear()
-        esc = b'\x1b'
         sys.stdout.write(f"{esc.decode()}[{0};{0}H")
         sys.stdout.write(f"{ANSI.UNDERSCORE}B{ANSI.NORMAL}ackFaces: {backface_culling}\n\rCTRL+C exit")
 
@@ -310,26 +335,11 @@ def main():
             backface_culling = not backface_culling
 
         if key and key[0] == 27 and key[1] == 91:
-            button, x, y, *_ = key[3: -1].split(b";")
-            pressed = key[-1] == 77
-            try:  # if data from stdin read incorrectly
-                if pressed:
-                    sys.stdout.write(f"{esc.decode()}[{y.decode()};{x.decode()}H")
-                    sys.stdout.write(f"█")
-
-                x = int(x.decode())
-                y = int(y.decode()) * 2
-            except ValueError:
-                termios.tcflush(sys.stdin, termios.TCIOFLUSH)
+            delta_new, prev_mouse_pos_new, ok = _handle_escape_sequence(key, prev_mouse_pos)
+            if not ok:
                 continue
-
-            if prev_mouse_pos is None:
-                prev_mouse_pos = np.array([x, y, 0])
-            delta = np.array([x, y, 0]) - prev_mouse_pos
-            if pressed:
-                prev_mouse_pos = np.array([x, y, 0])
-            else:
-                prev_mouse_pos = None
+            delta = delta_new
+            prev_mouse_pos = prev_mouse_pos_new
         draw(canvas, delta * sensitivity, backface_culling)
 
         sys.stdout.flush()
