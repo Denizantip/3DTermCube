@@ -590,6 +590,16 @@ class InputHandler:
         Process input and return (rotation_delta, toggle_culling, zoom_delta).
         Returns None for rotation_delta if no mouse movement.
         """
+        # Set non-blocking mode with a short timeout to allow responsive resizing
+        import select
+
+        # Check if input is available (with 50ms timeout)
+        readable, _, _ = select.select([sys.stdin], [], [], 0.05)
+
+        if not readable:
+            # No input available, return zeros
+            return np.array([0.0, 0.0, 0.0]), False, 0.0
+
         data = sys.stdin.buffer.raw.read(100)
         rotation_delta = np.array([0.0, 0.0, 0.0])
         toggle_culling = False
@@ -699,7 +709,7 @@ class CubeApp:
                 # Process input
                 rotation_delta, toggle_culling, zoom_delta = self.input_handler.process_input()
 
-                # Only redraw if something changed
+                # Update state based on input
                 if toggle_culling:
                     self.renderer.backface_culling = not self.renderer.backface_culling
                     self.needs_render = True
@@ -712,6 +722,7 @@ class CubeApp:
                     self.renderer.zoom(zoom_delta)
                     self.needs_render = True
 
+                # Render if anything changed (including window resize via signal handler)
                 if self.needs_render:
                     # Clear screen
                     sys.stdout.write(Terminal.CLEAR)
